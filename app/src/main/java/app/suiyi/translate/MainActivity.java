@@ -43,7 +43,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 
 public final class MainActivity extends Activity {
-    private static final int INK = Color.rgb(26, 48, 52), TEAL = Color.rgb(8, 127, 114);
+    private static final int INK = Ui.INK, TEAL = Ui.ACCENT;
     private static final int MICROPHONE = 10, SPEECH_FALLBACK = 11, INSTALL_PERMISSION = 12;
     private final ExecutorService executor = Executors.newFixedThreadPool(2);
     private final GatewayClient gateway = new GatewayClient();
@@ -55,13 +55,18 @@ public final class MainActivity extends Activity {
     private Spinner from, to, scene;
     private EditText input;
     private TextView status, translation, direction;
-    private Button translateButton, voiceA, voiceB, stopButton, favoriteButton;
+    private Button translateButton, stopButton, favoriteButton, voiceMode, textMode;
+    private LinearLayout voiceA, voiceB, voiceDock, resultActions, setupBanner;
+    private LinearLayout screenRoot, languageBar;
+    private TextView voiceLabelA, voiceLabelB, languageA, languageB, originalLabel, sceneLabel, translatedHint, dockHint;
+    private boolean typing;
     private SpeechRecognizer recognizer;
     private WavRecorder recorder;
     private TextToSpeech tts;
     private boolean ttsReady, busy, recording, listening, foreground;
     private int operation;
     private Language pendingSource, pendingTarget;
+    private Language inputLanguage;
     private Future<?> translationTask;
     private TranslationRecord latest;
     private File pendingInstall;
@@ -74,6 +79,8 @@ public final class MainActivity extends Activity {
         if (saved != null) {
             from.setSelection(saved.getInt("from", 0)); to.setSelection(saved.getInt("to", 2));
             input.setText(saved.getString("input", ""));
+            inputLanguage=Language.values()[Math.max(0,Math.min(2,saved.getInt("input_language",from.getSelectedItemPosition())))];
+            if(saved.containsKey("pending_source")){pendingSource=Language.values()[saved.getInt("pending_source")];pendingTarget=Language.values()[saved.getInt("pending_target")];}
             try {
                 String restored = saved.getString("latest", "");
                 if (!restored.isEmpty()) {
@@ -87,97 +94,159 @@ public final class MainActivity extends Activity {
             String downloaded = saved.getString("pending_install", "");
             if (!downloaded.isEmpty()) pendingInstall = new File(downloaded);
         }
+        refreshVoiceLabels(); showResultState();
+        if (saved != null) setTextMode(saved.getBoolean("typing", false), false);
         tts = new TextToSpeech(this, result -> runOnUiThread(() -> ttsReady = result == TextToSpeech.SUCCESS));
     }
     private void createScreen() {
-        LinearLayout root = column(); root.setBackgroundColor(Color.rgb(245, 247, 248));
-        root.setPadding(dp(18), dp(8), dp(18), dp(8));
-        root.setOnApplyWindowInsetsListener((view, insets) -> {
-            int top, bottom;
-            if (Build.VERSION.SDK_INT >= 30) {
-                android.graphics.Insets bars = insets.getInsets(WindowInsets.Type.systemBars());
-                top = bars.top; bottom = bars.bottom;
-            } else { top = insets.getSystemWindowInsetTop(); bottom = insets.getSystemWindowInsetBottom(); }
-            view.setPadding(dp(18), dp(8) + top, dp(8) + dp(10), dp(8) + bottom);
-            return insets;
-        });
-        LinearLayout heading = row();
-        TextView title = text("随译", 29); title.setTypeface(null, Typeface.BOLD);
-        heading.addView(title, new LinearLayout.LayoutParams(0, dp(55), 1));
-        heading.addView(button("记录", v -> showHistory(false)));
-        heading.addView(button("设置", v -> { if (!busy) showSettings(); else toast("请先结束当前输入或翻译。"); }));
-        root.addView(heading); root.addView(text("中文 · English · ไทย", 13));
-        ScrollView scroll = new ScrollView(this); scroll.setFillViewport(true);
-        LinearLayout body = column(); body.setPadding(0, dp(18), 0, dp(12)); scroll.addView(body);
-        root.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
-
-        LinearLayout languages = row();
-        String[] labels = {"中文", "English", "ไทย"};
-        from = spinner(labels); to = spinner(labels); to.setSelection(2);
-        languages.addView(from, new LinearLayout.LayoutParams(0, dp(54), 1));
-        languages.addView(button("⇄", v -> {
-            if (busy) return;
-            int old = from.getSelectedItemPosition(); from.setSelection(to.getSelectedItemPosition()); to.setSelection(old);
-            refreshVoiceLabels();
-        }));
-        languages.addView(to, new LinearLayout.LayoutParams(0, dp(54), 1)); body.addView(languages);
-        android.widget.AdapterView.OnItemSelectedListener selected = new android.widget.AdapterView.OnItemSelectedListener() {
-            public void onItemSelected(android.widget.AdapterView<?> parent, View view, int position, long id) { refreshVoiceLabels(); }
-            public void onNothingSelected(android.widget.AdapterView<?> parent) {}
-        };
-        from.setOnItemSelectedListener(selected); to.setOnItemSelectedListener(selected);
+        LinearLayout root = column();screenRoot=root; root.setBackgroundColor(Ui.BG);
+        root.setFocusableInTouchMode(true); applyInsets(root, 20);
+        LinearLayout heading = row(); heading.setPadding(0, dp(12), 0, dp(20));
+        LinearLayout mark = row(); mark.setGravity(Gravity.CENTER); mark.setBackground(Ui.shape(this, Ui.ACCENT, 13, false));
+        mark.addView(new Ui.Glyph(this, "logo", Color.WHITE), new LinearLayout.LayoutParams(dp(23), dp(23)));
+        heading.addView(mark, new LinearLayout.LayoutParams(dp(42), dp(42)));
+        LinearLayout brand = column(); TextView title = text("随译", 26); title.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        brand.addView(title); TextView tagline = muted("让交流，自然发生", 10); tagline.setPadding(0, dp(4), 0, 0); brand.addView(tagline);
+        LinearLayout.LayoutParams brandParams = new LinearLayout.LayoutParams(0, -2, 1); brandParams.leftMargin = dp(12); heading.addView(brand, brandParams);
+        View records = Ui.iconButton(this, "history", "", Ui.INK, false, v -> showHistory(false)); records.setContentDescription("翻译记录");
+        View config = Ui.iconButton(this, "settings", "", Ui.INK, false, v -> { if (!busy) showSettings(); else toast("请先结束当前输入或翻译。"); }); config.setContentDescription("设置");
+        heading.addView(records, new LinearLayout.LayoutParams(dp(44), dp(44))); heading.addView(config, new LinearLayout.LayoutParams(dp(44), dp(44))); root.addView(heading);
+        String[] labels = {"中文", "English", "ไทย"}; from = spinner(labels); to = spinner(labels);
+        from.setSelection(Math.max(0,Math.min(2,settings.prefs.getInt("language_from",0))));to.setSelection(Math.max(0,Math.min(2,settings.prefs.getInt("language_to",2))));
         scene = spinner(new String[]{"日常交流", "餐厅点餐", "交通问路", "酒店住宿", "购物议价"});
         for (int i = 0; i < scene.getCount(); i++) if (scene.getItemAtPosition(i).equals(settings.scene())) scene.setSelection(i);
-        body.addView(scene);
-
-        LinearLayout originalCard = card(); originalCard.addView(text("原文", 13));
-        input = new EditText(this); input.setTextSize(21); input.setTextColor(INK);
-        input.setHint("输入文字，或点下方按钮说话"); input.setGravity(Gravity.TOP);
-        input.setMinLines(3); input.setMaxLines(7);
-        input.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
-        originalCard.addView(input); body.addView(originalCard);
-        LinearLayout voices = row();
-        voiceA = button("说中文", v -> beginVoice(source(), target()));
-        voiceB = button("说ไทย", v -> beginVoice(target(), source()));
-        voices.addView(voiceA, new LinearLayout.LayoutParams(0, dp(58), 1));
-        voices.addView(voiceB, new LinearLayout.LayoutParams(0, dp(58), 1)); body.addView(voices);
-        translateButton = button("翻译文字", v -> translateText(input.getText().toString(), source(), target()));
-        translateButton.setTextColor(Color.WHITE); translateButton.setBackground(tinted(TEAL)); body.addView(translateButton);
-        stopButton = button("取消", v -> { if (recording) recorder.stop(); else cancelOperation(); });
-        stopButton.setVisibility(View.GONE); body.addView(stopButton);
-        status = text("准备就绪 · 首次使用请配置 API", 13); status.setPadding(0, dp(14), 0, dp(14)); body.addView(status);
-
-        LinearLayout translatedCard = card(); direction = text("译文", 13); translatedCard.addView(direction);
-        translation = text("译文会显示在这里", 25); translation.setTextIsSelectable(true);
-        translation.setPadding(0, dp(15), 0, dp(22)); translatedCard.addView(translation);
-        LinearLayout actions = row();
-        actions.addView(button("朗读", v -> { if (latest != null) speak(latest.translated, latest.target); }));
-        actions.addView(button("复制", v -> { if (latest != null) copy(latest.translated); }));
-        favoriteButton = button("收藏", v -> favoriteLatest()); actions.addView(favoriteButton);
-        actions.addView(button("大字", v -> showLargeTranslation())); translatedCard.addView(actions);
-        body.addView(translatedCard);
-        body.addView(button("开启新对话", v -> {
-            if (busy) cancelOperation(); conversation.clear(); input.setText(""); latest = null;
-            translation.setText("译文会显示在这里"); direction.setText("译文"); favoriteButton.setText("收藏");
-            status.setText("已开启新对话"); if (tts != null) tts.stop();
-        }));
-        body.addView(text("短句交流更清楚。原文、译文和最近 6 次对话会发送给你配置的模型接口。", 12));
-        setContentView(root);
+        LinearLayout languages = row(); languages.setBackground(Ui.shape(this, Color.WHITE, 24, true)); languages.setPadding(dp(18), dp(14), dp(18), dp(14));
+        languageBar=languages;
+        View mine = languageView(true); View theirs = languageView(false);
+        languages.addView(mine, new LinearLayout.LayoutParams(0, dp(48), 1));
+        View swap = Ui.iconButton(this, "swap", "", Ui.ACCENT, false, v -> {
+            if (busy) return; int old = from.getSelectedItemPosition(); from.setSelection(to.getSelectedItemPosition()); to.setSelection(old); refreshVoiceLabels();
+        }); swap.setContentDescription("交换双方语言"); swap.setBackground(Ui.ripple(this, Ui.SOFT, 14, false));
+        languages.addView(swap, new LinearLayout.LayoutParams(dp(42), dp(42))); languages.addView(theirs, new LinearLayout.LayoutParams(0, dp(48), 1)); root.addView(languages);
+        ScrollView scroll = new ScrollView(this); scroll.setFillViewport(false); scroll.setClipToPadding(false); scroll.setVerticalScrollBarEnabled(false);
+        LinearLayout body = column(); body.setPadding(0, dp(16), 0, dp(10)); scroll.addView(body); root.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
+        LinearLayout tools = row();
+        LinearLayout mode = row(); mode.setPadding(dp(3), dp(3), dp(3), dp(3)); mode.setBackground(Ui.shape(this, Ui.LINE, 13, false));
+        voiceMode = button("语音", v -> setTextMode(false, false)); textMode = button("文字", v -> setTextMode(true, true));
+        voiceMode.setPadding(dp(8),0,dp(8),0); textMode.setPadding(dp(8),0,dp(8),0); voiceMode.setTextSize(13); textMode.setTextSize(13);
+        mode.addView(voiceMode, new LinearLayout.LayoutParams(dp(60), dp(34))); mode.addView(textMode, new LinearLayout.LayoutParams(dp(60), dp(34)));
+        tools.addView(mode); View stretch = new View(this); tools.addView(stretch, new LinearLayout.LayoutParams(0, 1, 1));
+        sceneLabel = Ui.text(this, settings.scene() + "  ˅", 12, Ui.MUTED, false); sceneLabel.setGravity(Gravity.CENTER); sceneLabel.setPadding(dp(10), 0, dp(6), 0); sceneLabel.setContentDescription("选择交流场景");
+        sceneLabel.setOnClickListener(v -> { if (!busy) showChoices("选择交流场景", new String[]{"日常交流", "餐厅点餐", "交通问路", "酒店住宿", "购物议价"}, scene.getSelectedItemPosition(), choice -> {scene.setSelection(choice); sceneLabel.setText(scene.getItemAtPosition(choice) + "  ˅");}); });
+        tools.addView(sceneLabel, new LinearLayout.LayoutParams(-2, dp(44))); body.addView(tools); Ui.gap(body, 14);
+        setupBanner = Ui.card(this, Ui.SOFT); setupBanner.setOrientation(LinearLayout.HORIZONTAL); setupBanner.setGravity(Gravity.CENTER_VERTICAL); setupBanner.setPadding(dp(16), dp(14), dp(16), dp(14));
+        setupBanner.addView(new Ui.Glyph(this, "key", Ui.ACCENT), new LinearLayout.LayoutParams(dp(24), dp(24)));
+        LinearLayout setupCopy = column(); setupCopy.addView(Ui.text(this, "添加 API Key", 14, Ui.ACCENT, true)); TextView setupHint = muted("接口已预置，填入密钥即可开始", 11); setupHint.setPadding(0, dp(5), 0, 0); setupCopy.addView(setupHint);
+        LinearLayout.LayoutParams setupCopyParams = new LinearLayout.LayoutParams(0, -2, 1); setupCopyParams.leftMargin = dp(12); setupBanner.addView(setupCopy, setupCopyParams);
+        setupBanner.addView(new Ui.Glyph(this, "chevron", Ui.ACCENT), new LinearLayout.LayoutParams(dp(16), dp(16))); setupBanner.setOnClickListener(v -> showSettings()); setupBanner.setContentDescription("添加 API Key，接口已预置"); body.addView(setupBanner);
+        LinearLayout originalCard = Ui.card(this, Color.WHITE); LinearLayout originalHeader = row();
+        originalLabel = Ui.text(this, "原文 · 中文", 12, Ui.MUTED, true); originalHeader.addView(originalLabel, new LinearLayout.LayoutParams(0, -2, 1));
+        originalLabel.setContentDescription("选择文字输入语言");originalLabel.setOnClickListener(v->{if(!busy)showChoices("文字输入的语言",new String[]{source().label,target().label},textSource()==source()?0:1,choice->{inputLanguage=choice==0?source():target();refreshVoiceLabels();});});
+        View clear = Ui.iconButton(this, "close", "", Ui.MUTED, false, v -> { if (!busy) input.setText(""); }); clear.setContentDescription("清空输入"); originalHeader.addView(clear, new LinearLayout.LayoutParams(dp(32), dp(28))); originalCard.addView(originalHeader);
+        input = new EditText(this); input.setTextSize(22); input.setTextColor(Ui.INK); input.setHintTextColor(Color.rgb(174,179,195)); input.setHint("轻触输入想说的话"); input.setBackgroundColor(Color.TRANSPARENT); input.setPadding(0, dp(14), 0, dp(8)); input.setGravity(Gravity.TOP); input.setMinLines(3); input.setMaxLines(6); input.setIncludeFontPadding(false); input.setLineSpacing(dp(5), 1);
+        input.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES); input.setOnFocusChangeListener((v, focused) -> { if (focused) setTextMode(true, false); });
+        input.setContentDescription("翻译原文");
+        originalCard.addView(input, new LinearLayout.LayoutParams(-1, -2)); body.addView(originalCard);
+        LinearLayout translatedCard = Ui.card(this, Ui.SOFT); direction = Ui.text(this, "译文 · ไทย", 12, Ui.ACCENT, true); translatedCard.addView(direction);
+        translation = Ui.text(this, "译文将出现在这里", 23, Color.rgb(155,149,183), false); translation.setTextIsSelectable(true); translation.setLineSpacing(dp(7), 1); translation.setPadding(0, dp(18), 0, dp(14)); translatedCard.addView(translation);
+        translatedHint = muted("双方轮流点击下方按钮说话", 11); translatedCard.addView(translatedHint);
+        resultActions = row(); Button read = Ui.action(this, "volume", "朗读", v -> { if (latest != null) speak(latest.translated, latest.target); });
+        Button copy = Ui.action(this, "copy", "复制", v -> { if (latest != null) copy(latest.translated); }); favoriteButton = Ui.action(this, "heart", "收藏", v -> favoriteLatest()); Button full = Ui.action(this, "expand", "大字", v -> showLargeTranslation());
+        for (Button action : new Button[]{read, copy, favoriteButton, full}) resultActions.addView(action, new LinearLayout.LayoutParams(0, dp(58), 1)); resultActions.setVisibility(View.GONE); translatedCard.addView(resultActions); body.addView(translatedCard);
+        LinearLayout more = row(); View fresh = Ui.iconButton(this, "new", "新对话", Ui.MUTED, false, v -> resetConversation()); more.addView(fresh, new LinearLayout.LayoutParams(-2, dp(44))); more.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1));
+        status = muted("准备就绪", 11); status.setGravity(Gravity.END); more.addView(status, new LinearLayout.LayoutParams(0, -2, 1.8f)); body.addView(more);
+        LinearLayout dock = column(); dock.setPadding(0, dp(8), 0, dp(6)); root.addView(dock);
+        voiceDock = row(); voiceA = voiceButton(true); voiceB = voiceButton(false);
+        LinearLayout.LayoutParams left = new LinearLayout.LayoutParams(0, dp(86), 1); left.rightMargin = dp(6); voiceDock.addView(voiceA, left);
+        LinearLayout.LayoutParams right = new LinearLayout.LayoutParams(0, dp(86), 1); right.leftMargin = dp(6); voiceDock.addView(voiceB, right); dock.addView(voiceDock);
+        translateButton = Ui.button(this, "翻译文字  →", true, v -> translateText(input.getText().toString(), textSource(), textTarget())); translateButton.setLayoutParams(new LinearLayout.LayoutParams(-1, dp(56))); translateButton.setVisibility(View.GONE); dock.addView(translateButton);
+        stopButton = Ui.button(this, "取消", true, v -> { if (recording && recorder != null) recorder.stop(); else if (listening && recognizer != null) {recognizer.stopListening(); stopButton.setEnabled(false); status.setText("正在完成听写…");} else cancelOperation(); });
+        stopButton.setVisibility(View.GONE); dock.addView(stopButton);
+        dockHint = muted("点击说话，停顿后自动翻译", 11); dockHint.setGravity(Gravity.CENTER); dockHint.setPadding(0, dp(12), 0, dp(2)); dock.addView(dockHint);
+        setContentView(root); root.requestFocus(); refreshVoiceLabels(); setTextMode(false, false); updateConfiguredState();
+    }
+    private View languageView(boolean mine) {
+        LinearLayout view = column(); view.setGravity(Gravity.CENTER); view.setBackground(Ui.ripple(this, Color.TRANSPARENT, 14, false));
+        TextView side = muted(mine ? "我说" : "对方说", 10); side.setGravity(Gravity.CENTER); view.addView(side); TextView label = Ui.text(this, mine ? "中文" : "ไทย", 19, Ui.INK, true); label.setGravity(Gravity.CENTER); label.setPadding(0, dp(5), 0, 0); view.addView(label);
+        if (mine) languageA = label; else languageB = label;
+        view.setOnClickListener(v -> { if (busy) return; Spinner selected = mine ? from : to, other = mine ? to : from;
+            showChoices(mine ? "我说的语言" : "对方说的语言", new String[]{"中文", "English", "ไทย"}, selected.getSelectedItemPosition(), choice -> {
+                int previous = selected.getSelectedItemPosition(); if (choice == other.getSelectedItemPosition()) other.setSelection(previous); selected.setSelection(choice); refreshVoiceLabels();
+            }); }); view.setContentDescription(mine ? "选择我说的语言" : "选择对方说的语言"); return view;
+    }
+    private LinearLayout voiceButton(boolean mine) {
+        LinearLayout view = row(); view.setGravity(Gravity.CENTER); view.setPadding(dp(12), dp(14), dp(12), dp(14)); view.setBackground(Ui.ripple(this, mine ? Ui.ACCENT : Color.WHITE, 22, !mine));
+        Ui.Glyph mic = new Ui.Glyph(this, "mic", mine ? Color.WHITE : Ui.ACCENT); view.addView(mic, new LinearLayout.LayoutParams(dp(23), dp(23)));
+        LinearLayout copy = column(); TextView label = Ui.text(this, "", 16, mine ? Color.WHITE : Ui.INK, true); if (mine) voiceLabelA = label; else voiceLabelB = label;
+        copy.addView(label); TextView subtitle = Ui.text(this, mine ? "我来说" : "对方说", 10, mine ? Color.rgb(220,214,255) : Ui.MUTED, false); subtitle.setPadding(0, dp(6), 0, 0); copy.addView(subtitle);
+        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(-2, -2); p.leftMargin = dp(12); view.addView(copy, p);
+        view.setOnClickListener(v -> beginVoice(mine ? source() : target(), mine ? target() : source())); view.setFocusable(true); return view;
+    }
+    private void setTextMode(boolean text, boolean keyboard) {
+        typing = text;
+        if (voiceMode == null) return;
+        input.setMinLines(text ? 3 : 2);
+        voiceMode.setBackground(Ui.ripple(this, text ? Color.TRANSPARENT : Color.WHITE, 10, false)); voiceMode.setTextColor(text ? Ui.MUTED : Ui.INK);
+        textMode.setBackground(Ui.ripple(this, text ? Color.WHITE : Color.TRANSPARENT, 10, false)); textMode.setTextColor(text ? Ui.INK : Ui.MUTED);
+        voiceDock.setVisibility(!busy && !text ? View.VISIBLE : View.GONE); translateButton.setVisibility(!busy && text ? View.VISIBLE : View.GONE);
+        dockHint.setText(text ? "输入完成后，点击翻译" : "点击说话，停顿后自动翻译");
+        if (keyboard && text) { input.requestFocus(); input.post(()->{if(typing&&input.hasFocus())((android.view.inputmethod.InputMethodManager)getSystemService(INPUT_METHOD_SERVICE)).showSoftInput(input, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT);}); }
+        if (!text) { input.clearFocus(); ((android.view.inputmethod.InputMethodManager)getSystemService(INPUT_METHOD_SERVICE)).hideSoftInputFromWindow(input.getWindowToken(), 0); }
+    }
+    private void resetConversation() {
+        if (busy) cancelOperation(); conversation.clear(); input.setText(""); latest = null; inputLanguage=source();refreshVoiceLabels();showResultState(); status.setText("已开启新对话"); if (tts != null) tts.stop();
+    }
+    private void showResultState() {
+        resultActions.setVisibility(latest == null ? View.GONE : View.VISIBLE); translatedHint.setVisibility(latest == null ? View.VISIBLE : View.GONE);
+        translation.setTextColor(latest == null ? Color.rgb(155,149,183) : Ui.INK);
+        if (latest == null) {translation.setText("译文将出现在这里"); direction.setText("译文 · " + target().label); favoriteButton.setText("收藏");}
+    }
+    private void updateConfiguredState() { setupBanner.setVisibility(settings.hasApiKey() ? View.GONE : View.VISIBLE); }
+    private void applyInsets(View root, int horizontal) {
+        root.setPadding(dp(horizontal), 0, dp(horizontal), dp(8));
+        root.setOnApplyWindowInsetsListener((v, insets) -> {
+            int top, bottom;
+            if (Build.VERSION.SDK_INT >= 30) {android.graphics.Insets bars = insets.getInsets(WindowInsets.Type.systemBars()); top=bars.top; bottom=Math.max(bars.bottom,insets.getInsets(WindowInsets.Type.ime()).bottom);}
+            else {top=insets.getSystemWindowInsetTop();bottom=insets.getSystemWindowInsetBottom();}
+            if(v==screenRoot&&languageBar!=null&&Build.VERSION.SDK_INT>=30)languageBar.setVisibility(insets.getInsets(WindowInsets.Type.ime()).bottom>0?View.GONE:View.VISIBLE);
+            v.setPadding(dp(horizontal), top, dp(horizontal), bottom+dp(8)); return insets;
+        });
+    }
+    private void showChoices(String title, String[] values, int current, java.util.function.IntConsumer chosen) {
+        LinearLayout sheet = column(); sheet.setPadding(dp(24), dp(24), dp(24), dp(24)); sheet.setBackground(Ui.shape(this, Ui.BG, 28, false));
+        sheet.addView(Ui.text(this, title, 21, Ui.INK, true)); Ui.gap(sheet, 18);
+        android.app.Dialog dialog = new android.app.Dialog(this);
+        for (int i=0;i<values.length;i++) {final int index=i; LinearLayout option=row(); option.setPadding(dp(18),0,dp(16),0); option.setBackground(Ui.ripple(this,i==current?Ui.SOFT:Color.WHITE,16,false));
+            option.addView(Ui.text(this,values[i],17,i==current?Ui.ACCENT:Ui.INK,true),new LinearLayout.LayoutParams(0,-2,1));
+            if(i==current)option.addView(new Ui.Glyph(this,"check",Ui.ACCENT),new LinearLayout.LayoutParams(dp(20),dp(20)));
+            LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(-1,dp(58));p.bottomMargin=dp(8);sheet.addView(option,p);option.setOnClickListener(v->{chosen.accept(index);dialog.dismiss();});}
+        dialog.setContentView(sheet); android.view.Window window=dialog.getWindow(); if(window!=null){window.setBackgroundDrawableResource(android.R.color.transparent);window.setGravity(Gravity.BOTTOM);window.setLayout(-1,-2);window.setDimAmount(.28f);} dialog.show(); if(window!=null)window.setLayout(-1,-2);
     }
     private Language source() { return Language.values()[from.getSelectedItemPosition()]; }
     private Language target() { return Language.values()[to.getSelectedItemPosition()]; }
+    private Language textSource(){return inputLanguage==null?source():inputLanguage;}
+    private Language textTarget(){return textSource()==source()?target():source();}
     private void refreshVoiceLabels() {
-        if (voiceA != null) { voiceA.setText("说" + source().label); voiceB.setText("说" + target().label); }
+        if (voiceLabelA == null) return;
+        voiceLabelA.setText("说" + source().label); voiceLabelB.setText("说" + target().label);
+        languageA.setText(source().label); languageB.setText(target().label);
+        if(inputLanguage==null||(inputLanguage!=source()&&inputLanguage!=target()))inputLanguage=source();
+        originalLabel.setText("原文 · " + inputLanguage.label + "  ˅");
+        settings.prefs.edit().putInt("language_from",from.getSelectedItemPosition()).putInt("language_to",to.getSelectedItemPosition()).apply();
+        voiceA.setContentDescription("说" + source().label); voiceB.setContentDescription("说" + target().label);
+        if (latest == null) direction.setText("译文 · " + target().label);
     }
     private void setBusy(boolean value, String message) {
-        busy = value; input.setEnabled(!value); from.setEnabled(!value); to.setEnabled(!value); scene.setEnabled(!value);
-        translateButton.setEnabled(!value); voiceA.setEnabled(!value); voiceB.setEnabled(!value);
-        stopButton.setVisibility(value ? View.VISIBLE : View.GONE);
-        stopButton.setText(recording ? "结束录音并翻译" : "取消"); status.setText(message);
+        busy=value; input.setEnabled(!value);from.setEnabled(!value);to.setEnabled(!value);scene.setEnabled(!value);
+        voiceMode.setEnabled(!value);textMode.setEnabled(!value);translateButton.setEnabled(!value);voiceA.setEnabled(!value);voiceB.setEnabled(!value);
+        stopButton.setVisibility(value?View.VISIBLE:View.GONE);stopButton.setEnabled(true);
+        stopButton.setText(recording?"结束录音并翻译":listening?"结束说话":"取消翻译");status.setText(message);
+        setTextMode(typing,false);
+        if(value)dockHint.setText(recording?"正在录音，点击上方按钮结束":listening?"正在听你说话，停顿后自动翻译":"AI 正在翻译，请稍候");
     }
     private GatewayClient.Config checkedConfig() {
         try { return settings.config(); }
-        catch (Exception e) { error(e); return null; }
+        catch (Exception e) { if (!settings.hasApiKey()) showSettings(); else error(e); return null; }
     }
     private void translateText(String text, Language source, Language target) {
         if (busy) return;
@@ -199,10 +268,11 @@ public final class MainActivity extends Activity {
         if (id != operation || isDestroyed()) return;
         recording = false; setBusy(false, "翻译完成"); input.setText(result.original);
         latest = new TranslationRecord(source, target, result.original, result.translated);
+        inputLanguage=source;refreshVoiceLabels();
         conversation.add(latest); while (conversation.size() > 6) conversation.remove(0);
         if (settings.saveHistory()) history.add(latest);
         translation.setText(result.translated); direction.setText(source.label + " → " + target.label);
-        favoriteButton.setText("收藏");
+        favoriteButton.setText("收藏"); showResultState();
         if (settings.autoSpeak() && foreground) speak(result.translated, target);
     }
     private void failOperation(int id, Throwable e) {
@@ -219,7 +289,8 @@ public final class MainActivity extends Activity {
         if (busy) return;
         if (source == target) { toast("请选择两种不同的语言。"); return; }
         if (checkedConfig() == null) return;
-        from.setSelection(source.ordinal()); to.setSelection(target.ordinal()); refreshVoiceLabels();
+        inputLanguage=source;refreshVoiceLabels();
+        setTextMode(false, false);
         pendingSource = source; pendingTarget = target;
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, MICROPHONE); return;
@@ -339,84 +410,76 @@ public final class MainActivity extends Activity {
         favoriteButton.setText(latest.favorite ? "已收藏" : "收藏");
     }
     private void showLargeTranslation() {
-        if (latest == null) return;
-        TextView display = text(latest.translated, 38); display.setPadding(dp(24), dp(30), dp(24), dp(30)); display.setTextIsSelectable(true);
-        ScrollView scroll = new ScrollView(this); scroll.addView(display);
-        new AlertDialog.Builder(this).setTitle(latest.target.label).setView(scroll).setPositiveButton("关闭", null).show();
+        if(latest==null)return;LinearLayout root=column();root.setBackgroundColor(Ui.SOFT);applyInsets(root,24);android.app.Dialog dialog=Ui.page(this,root);root.addView(pageHeader(latest.target.label,dialog));
+        ScrollView scroll=new ScrollView(this);LinearLayout content=column();content.setPadding(0,dp(28),0,dp(24));TextView display=Ui.text(this,latest.translated,42,Ui.INK,true);display.setLineSpacing(dp(12),1);display.setTextIsSelectable(true);content.addView(display);Ui.gap(content,28);content.addView(muted(latest.original,18));scroll.addView(content);root.addView(scroll,new LinearLayout.LayoutParams(-1,0,1));
+        root.addView(Ui.button(this,"朗读给对方听",true,v->speak(latest.translated,latest.target)));dialog.show();if(dialog.getWindow()!=null)dialog.getWindow().setLayout(-1,-1);
     }
     private void showHistory(boolean favoritesOnly) {
-        LinearLayout list = column(); list.setPadding(dp(16), 0, dp(16), dp(12));
-        list.addView(button(favoritesOnly ? "查看全部记录" : "只看收藏", v -> showHistory(!favoritesOnly)));
-        int count = 0;
-        for (TranslationRecord record : history.load()) {
-            if (favoritesOnly && !record.favorite) continue;
-            count++; LinearLayout card = card();
-            card.addView(text(record.source.label + " → " + record.target.label + " · " + DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(new java.util.Date(record.time)), 12));
-            TextView original = text(record.original, 17); original.setTextIsSelectable(true); card.addView(original);
-            TextView translated = text(record.translated, 21); translated.setTextIsSelectable(true); card.addView(translated);
-            LinearLayout actions = row(); actions.addView(button("朗读", v -> speak(record.translated, record.target)));
-            actions.addView(button("复制", v -> copy(record.translated)));
-            Button star = button(record.favorite ? "已收藏" : "收藏", null);
-            star.setOnClickListener(v -> { history.toggleFavorite(record.id); record.favorite = !record.favorite; star.setText(record.favorite ? "已收藏" : "收藏"); if (latest != null && latest.id.equals(record.id)) { latest.favorite = record.favorite; favoriteButton.setText(record.favorite ? "已收藏" : "收藏"); } });
-            actions.addView(star); card.addView(actions); list.addView(card);
-        }
-        if (count == 0) list.addView(text("还没有记录。", 18));
-        ScrollView scroll = new ScrollView(this); scroll.addView(list);
-        AlertDialog dialog = new AlertDialog.Builder(this).setTitle(favoritesOnly ? "收藏" : "本机记录").setView(scroll)
-            .setPositiveButton("关闭", null).setNeutralButton("清除普通记录", null).create();
-        dialog.setOnShowListener(d -> dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(v -> new AlertDialog.Builder(this)
-            .setMessage("清除本机普通记录？收藏会保留。")
-            .setPositiveButton("清除", (x, w) -> { history.clear(false); dialog.dismiss(); })
-            .setNegativeButton("取消", null).show())); dialog.show();
+        LinearLayout root=column();root.setBackgroundColor(Ui.BG);applyInsets(root,20);android.app.Dialog dialog=Ui.page(this,root);root.addView(pageHeader("翻译记录",dialog));
+        LinearLayout tabs=row();Button all=button("全部",null),saved=button("收藏",null);tabs.addView(all,new LinearLayout.LayoutParams(0,dp(44),1));LinearLayout.LayoutParams savedParams=new LinearLayout.LayoutParams(0,dp(44),1);savedParams.leftMargin=dp(10);tabs.addView(saved,savedParams);root.addView(tabs);
+        ScrollView scroll=new ScrollView(this);scroll.setVerticalScrollBarEnabled(false);LinearLayout list=column();list.setPadding(0,dp(18),0,dp(20));scroll.addView(list);root.addView(scroll,new LinearLayout.LayoutParams(-1,0,1));
+        java.util.function.Consumer<Boolean> render=only->{
+            list.removeAllViews();all.setBackground(Ui.ripple(this,!only?Ui.ACCENT:Ui.LINE,14,false));all.setTextColor(!only?Color.WHITE:Ui.MUTED);saved.setBackground(Ui.ripple(this,only?Ui.ACCENT:Ui.LINE,14,false));saved.setTextColor(only?Color.WHITE:Ui.MUTED);
+            int count=0;for(TranslationRecord record:history.load()){
+                if(only&&!record.favorite)continue;count++;LinearLayout card=Ui.card(this,Color.WHITE);card.addView(muted(record.source.label+" → "+record.target.label+"  ·  "+DateFormat.getDateTimeInstance(DateFormat.SHORT,DateFormat.SHORT).format(new java.util.Date(record.time)),11));
+                TextView original=Ui.text(this,record.original,14,Ui.MUTED,false);original.setPadding(0,dp(14),0,dp(10));card.addView(original);TextView translated=Ui.text(this,record.translated,21,Ui.INK,true);translated.setTextIsSelectable(true);translated.setLineSpacing(dp(5),1);card.addView(translated);Ui.gap(card,12);
+                LinearLayout actions=row();Button read=Ui.action(this,"volume","朗读",v->speak(record.translated,record.target));Button copy=Ui.action(this,"copy","复制",v->copy(record.translated));Button star=Ui.action(this,"heart",record.favorite?"已收藏":"收藏",null);
+                star.setOnClickListener(v->{history.toggleFavorite(record.id);record.favorite=!record.favorite;star.setText(record.favorite?"已收藏":"收藏");if(latest!=null&&latest.id.equals(record.id)){latest.favorite=record.favorite;favoriteButton.setText(record.favorite?"已收藏":"收藏");}});
+                for(Button item:new Button[]{read,copy,star})actions.addView(item,new LinearLayout.LayoutParams(0,dp(54),1));card.addView(actions);list.addView(card);
+            }
+            if(count==0){LinearLayout empty=column();empty.setGravity(Gravity.CENTER);empty.setPadding(dp(20),dp(72),dp(20),dp(30));LinearLayout icon=row();icon.setGravity(Gravity.CENTER);icon.setBackground(Ui.shape(this,Ui.SOFT,26,false));icon.addView(new Ui.Glyph(this,only?"heart":"history",Ui.ACCENT),new LinearLayout.LayoutParams(dp(32),dp(32)));empty.addView(icon,new LinearLayout.LayoutParams(dp(76),dp(76)));Ui.gap(empty,24);empty.addView(Ui.text(this,only?"收藏常用的表达":"还没有翻译记录",20,Ui.INK,true));Ui.gap(empty,10);empty.addView(muted(only?"点译文下的收藏，下次随时取用":"开始一次交流，好好保存每一句",12));list.addView(empty);}
+        };
+        all.setOnClickListener(v->render.accept(false));saved.setOnClickListener(v->render.accept(true));render.accept(favoritesOnly);
+        root.addView(button("清除普通记录",v->new AlertDialog.Builder(this).setTitle("清除翻译记录？").setMessage("普通记录会清除，收藏继续保留。")
+            .setPositiveButton("清除",(d,w)->{history.clear(false);render.accept(false);}).setNegativeButton("保留",null).show()));dialog.show();if(dialog.getWindow()!=null)dialog.getWindow().setLayout(-1,-1);
     }
     private void showSettings() {
-        LinearLayout form = column(); form.setPadding(dp(20), 0, dp(20), dp(16));
-        form.addView(text("模型接口", 20));
-        EditText base = field(form, "HTTPS API 地址（含 /v1）", settings.base(), false);
-        EditText key = field(form, "API 密钥：留空保留已存密钥", "", true);
-        EditText model = field(form, "翻译模型名称", settings.model(), false);
-        form.addView(button("读取模型列表", v -> {
-            try {
-                String token = key.getText().toString().trim(); if (token.isEmpty()) token = settings.secrets.get("api_key");
-                if (token.isEmpty()) throw new IllegalStateException("请填写 API 密钥。");
-                GatewayClient.Config config = new GatewayClient.Config(base.getText().toString(), token, model.getText().toString());
-                toast("正在读取模型列表…");
-                executor.submit(() -> { try { List<String> names = modelGateway.models(config);
-                    runOnUiThread(() -> { if (!isDestroyed()) chooseModel(names, model); }); }
-                    catch (Exception e) { runOnUiThread(() -> { if (!isDestroyed()) error(e); }); } });
-            } catch (Exception e) { error(e); }
-        }));
-        form.addView(text("语音输入", 20));
-        Spinner mode = spinner(new String[]{"手机听写（默认）", "音频直传（实验）"}); mode.setSelection("audio".equals(settings.inputMode()) ? 1 : 0); form.addView(mode);
-        form.addView(text("音频直传使用 input_audio / WAV 请求，图片多模态不代表支持语音。手机听写和朗读由系统语音服务提供，语言支持取决于手机。", 12));
-        CheckBox autoplay = check(form, "翻译后自动朗读", settings.autoSpeak());
-        CheckBox save = check(form, "保存本机翻译记录", settings.saveHistory());
-        form.addView(text("手机更新", 20));
-        EditText repository = field(form, "GitHub 仓库：用户名/仓库名", settings.repository(), false);
-        EditText githubToken = field(form, "私有仓库读取令牌：留空保留", "", true);
-        form.addView(text("公开仓库无需令牌。私有仓库仅需该仓库 Contents 读取权限。", 12));
-        CheckBox autoUpdate = check(form, "每天首次打开时检查更新", settings.autoUpdate());
-        form.addView(button("检查更新（使用已保存设置）", v -> checkUpdate(true)));
-        form.addView(text("版本 " + BuildConfig.VERSION_NAME + "（" + BuildConfig.VERSION_CODE + "）", 13));
-        form.addView(button("清除已存密钥及 GitHub 令牌", v -> new AlertDialog.Builder(this).setMessage("清除手机保存的 API 密钥和 GitHub 令牌？")
-            .setPositiveButton("清除", (d, w) -> { try { settings.secrets.put("api_key", ""); settings.secrets.put("github_token", ""); key.setText(""); githubToken.setText(""); toast("已清除"); } catch (Exception e) { error(e); } })
-            .setNegativeButton("取消", null).show()));
-        ScrollView scroll = new ScrollView(this); scroll.addView(form);
-        AlertDialog dialog = new AlertDialog.Builder(this).setTitle("设置").setView(scroll).setPositiveButton("保存", null).setNegativeButton("关闭", null).create();
-        dialog.setOnShowListener(d -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
-            try {
-                String endpoint = base.getText().toString().trim(); if (!endpoint.isEmpty()) endpoint = UrlPolicy.apiBase(endpoint);
-                String repo = repository.getText().toString().trim(); if (!repo.isEmpty()) repo = UrlPolicy.repository(repo);
-                String chosenModel = model.getText().toString().trim(); if (chosenModel.isEmpty()) throw new IllegalStateException("请填写模型名称。");
-                String apiKey = key.getText().toString().trim(), gitKey = githubToken.getText().toString().trim();
-                if (!apiKey.isEmpty()) settings.secrets.put("api_key", apiKey);
-                if (!gitKey.isEmpty()) settings.secrets.put("github_token", gitKey);
-                settings.prefs.edit().putString("api_base", endpoint).putString("model", chosenModel).putString("repository", repo)
-                    .putString("input_mode", mode.getSelectedItemPosition() == 1 ? "audio" : "system")
-                    .putBoolean("auto_speak", autoplay.isChecked()).putBoolean("save_history", save.isChecked()).putBoolean("auto_update", autoUpdate.isChecked()).apply();
-                dialog.dismiss(); status.setText("设置已保存");
-            } catch (Exception e) { error(e); }
-        })); dialog.show();
+        LinearLayout root=column(); root.setBackgroundColor(Ui.BG); applyInsets(root,20);
+        android.app.Dialog dialog=Ui.page(this,root); root.addView(pageHeader("设置",dialog));
+        ScrollView scroll=new ScrollView(this);scroll.setVerticalScrollBarEnabled(false);LinearLayout form=column();form.setPadding(0,dp(14),0,dp(12));scroll.addView(form);root.addView(scroll,new LinearLayout.LayoutParams(-1,0,1));
+        LinearLayout connection=Ui.card(this,Color.WHITE); connection.addView(Ui.text(this,"连接你的 AI",23,Ui.INK,true));
+        TextView hint=muted("接口和默认模型已准备好，只需填写密钥。",12);hint.setPadding(0,dp(8),0,dp(20));connection.addView(hint);
+        EditText key=field(connection,"API Key","",true);key.setHint(settings.hasApiKey()?"已保存 · 留空即可保留":"粘贴你的 API Key");
+        TextView privateHint=muted("密钥加密保存在这台手机上",11);privateHint.setPadding(0,dp(10),0,0);connection.addView(privateHint);form.addView(connection);
+        LinearLayout preferences=Ui.card(this,Color.WHITE); preferences.addView(Ui.text(this,"交流偏好",16,Ui.INK,true)); Ui.gap(preferences,10);
+        android.widget.Switch autoplay=toggle(preferences,"自动朗读译文","翻译完成后，直接播放给对方听",settings.autoSpeak());
+        preferences.addView(Ui.line(this)); android.widget.Switch save=toggle(preferences,"保存翻译记录","仅保存在手机，可随时清除",settings.saveHistory());form.addView(preferences);
+        LinearLayout version=Ui.card(this,Color.WHITE); LinearLayout versionRow=row(); LinearLayout versionText=column(); versionText.addView(Ui.text(this,"应用更新",16,Ui.INK,true)); TextView versionLabel=muted("当前版本 "+BuildConfig.VERSION_NAME,12);versionLabel.setPadding(0,dp(8),0,0);versionText.addView(versionLabel);versionRow.addView(versionText,new LinearLayout.LayoutParams(0,-2,1));
+        Button update=button("检查更新",v->checkUpdate(true));versionRow.addView(update,new LinearLayout.LayoutParams(-2,dp(42)));version.addView(versionRow);android.widget.Switch autoUpdate=toggle(version,"自动检查更新","每天首次打开时检查一次",settings.autoUpdate());form.addView(version);
+        LinearLayout advanced=Ui.card(this,Color.WHITE); LinearLayout advancedHeader=row(); advancedHeader.addView(Ui.text(this,"高级设置",16,Ui.INK,true),new LinearLayout.LayoutParams(0,-2,1)); Ui.Glyph chevron=new Ui.Glyph(this,"down",Ui.MUTED);advancedHeader.addView(chevron,new LinearLayout.LayoutParams(dp(18),dp(18)));advanced.addView(advancedHeader);
+        LinearLayout details=column();details.setVisibility(View.GONE);Ui.gap(details,20);
+        EditText base=field(details,"API 地址",settings.base(),false);base.setHint("接口地址");
+        EditText model=field(details,"翻译模型",settings.model(),false);
+        Button models=button("选择其他模型",v->{
+            try {String token=key.getText().toString().trim();if(token.isEmpty())token=settings.secrets.get("api_key");if(token.isEmpty())throw new IllegalStateException("请先填写 API Key。");
+                GatewayClient.Config config=new GatewayClient.Config(base.getText().toString(),token,model.getText().toString());toast("正在读取可用模型…");
+                executor.submit(()->{try{List<String> names=modelGateway.models(config);runOnUiThread(()->{if(!isDestroyed()&&dialog.isShowing())chooseModel(names,model);});}catch(Exception e){runOnUiThread(()->{if(!isDestroyed())error(e);});}});
+            }catch(Exception e){error(e);}
+        });details.addView(models);Ui.gap(details,16);details.addView(Ui.text(this,"语音输入方式",13,Ui.MUTED,true));Ui.gap(details,8);
+        Spinner mode=spinner(new String[]{"手机听写", "AI 音频识别（实验）"});mode.setSelection("audio".equals(settings.inputMode())?1:0);details.addView(mode,new LinearLayout.LayoutParams(-1,dp(52)));
+        TextView audioHint=muted("AI 音频识别需要模型及网关支持音频输入。",11);audioHint.setPadding(0,dp(8),0,dp(18));details.addView(audioHint);
+        EditText repository=field(details,"更新仓库",settings.repository(),false);EditText githubToken=field(details,"私有仓库令牌（公开仓库无需填写）","",true);
+        details.addView(button("清除保存的密钥",v->new AlertDialog.Builder(this).setTitle("清除密钥？").setMessage("清除这台手机保存的 API Key 和 GitHub 令牌。")
+            .setPositiveButton("清除",(d,w)->{try{settings.secrets.put("api_key","");settings.secrets.put("github_token","");key.setText("");githubToken.setText("");key.setHint("粘贴你的 API Key");updateConfiguredState();toast("已清除密钥");}catch(Exception e){error(e);}}).setNegativeButton("保留",null).show()));
+        advanced.addView(details);advancedHeader.setPadding(0,dp(4),0,dp(4));advancedHeader.setOnClickListener(v->{boolean expanded=details.getVisibility()==View.VISIBLE;details.setVisibility(expanded?View.GONE:View.VISIBLE);chevron.setRotation(expanded?0:180);});advancedHeader.setContentDescription("展开或收起高级设置");form.addView(advanced);
+        LinearLayout footer=column();footer.setPadding(0,dp(8),0,dp(6));Button commit=Ui.button(this,"保存并开始翻译",true,v->{
+            try {String endpoint=UrlPolicy.apiBase(base.getText().toString().trim());String repo=repository.getText().toString().trim();if(!repo.isEmpty())repo=UrlPolicy.repository(repo);
+                String chosenModel=model.getText().toString().trim();if(chosenModel.isEmpty())throw new IllegalStateException("请填写模型名称。");
+                String apiKey=key.getText().toString().trim(),gitKey=githubToken.getText().toString().trim();if(apiKey.isEmpty()&&!settings.hasApiKey()){key.requestFocus();throw new IllegalStateException("填入 API Key 后即可开始。");}
+                if(!apiKey.isEmpty())settings.secrets.put("api_key",apiKey);if(!gitKey.isEmpty())settings.secrets.put("github_token",gitKey);
+                settings.prefs.edit().putString("api_base",endpoint).putString("model",chosenModel).putString("repository",repo).putString("input_mode",mode.getSelectedItemPosition()==1?"audio":"system")
+                    .putBoolean("auto_speak",autoplay.isChecked()).putBoolean("save_history",save.isChecked()).putBoolean("auto_update",autoUpdate.isChecked()).apply();
+                dialog.dismiss();updateConfiguredState();status.setText("已配置 · "+chosenModel);
+            }catch(Exception e){error(e);}
+        });footer.addView(commit);root.addView(footer);dialog.show();if(dialog.getWindow()!=null)dialog.getWindow().setLayout(-1,-1);
+    }
+    private View pageHeader(String title,android.app.Dialog dialog){
+        LinearLayout header=row();header.setPadding(0,dp(10),0,dp(12));View close=Ui.iconButton(this,"back","",Ui.INK,false,v->dialog.dismiss());close.setContentDescription("返回");header.addView(close,new LinearLayout.LayoutParams(dp(40),dp(48)));TextView name=Ui.text(this,title,23,Ui.INK,true);LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(0,-2,1);p.leftMargin=dp(6);header.addView(name,p);return header;
+    }
+    private android.widget.Switch toggle(LinearLayout parent,String title,String description,boolean selected){
+        LinearLayout line=row();line.setPadding(0,dp(16),0,dp(16));LinearLayout copy=column();copy.addView(Ui.text(this,title,14,Ui.INK,true));TextView help=muted(description,11);help.setPadding(0,dp(6),dp(8),0);copy.addView(help);line.addView(copy,new LinearLayout.LayoutParams(0,-2,1));
+        android.widget.Switch control=new android.widget.Switch(this);control.setChecked(selected);control.setShowText(false);control.setContentDescription(title);control.setButtonTintList(android.content.res.ColorStateList.valueOf(Ui.ACCENT));
+        android.content.res.ColorStateList thumb=new android.content.res.ColorStateList(new int[][]{new int[]{android.R.attr.state_checked},new int[]{}},new int[]{Ui.ACCENT,Color.rgb(164,170,190)});control.setThumbTintList(thumb);control.setTrackTintList(new android.content.res.ColorStateList(new int[][]{new int[]{android.R.attr.state_checked},new int[]{}},new int[]{Color.rgb(208,200,253),Ui.LINE}));line.addView(control);parent.addView(line);return control;
     }
     private void chooseModel(List<String> names, EditText target) {
         if (names.isEmpty()) { toast("这个密钥没有可用模型。"); return; }
@@ -495,6 +558,9 @@ public final class MainActivity extends Activity {
         super.onPause();
     }
     @Override protected void onSaveInstanceState(Bundle state) {
+        state.putBoolean("typing", typing);
+        state.putInt("input_language",textSource().ordinal());
+        if(pendingSource!=null&&pendingTarget!=null){state.putInt("pending_source",pendingSource.ordinal());state.putInt("pending_target",pendingTarget.ordinal());}
         state.putInt("from", from.getSelectedItemPosition()); state.putInt("to", to.getSelectedItemPosition()); state.putString("input", input.getText().toString());
         try {
             if (latest != null) state.putString("latest", latest.json().toString());
@@ -511,23 +577,22 @@ public final class MainActivity extends Activity {
     }
     private LinearLayout column() { LinearLayout view = new LinearLayout(this); view.setOrientation(LinearLayout.VERTICAL); return view; }
     private LinearLayout row() { LinearLayout view = new LinearLayout(this); view.setGravity(Gravity.CENTER_VERTICAL); return view; }
-    private LinearLayout card() {
-        LinearLayout view = column(); view.setPadding(dp(16), dp(16), dp(16), dp(12)); view.setBackground(tinted(Color.WHITE));
-        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2); params.setMargins(0, dp(10), 0, dp(12)); view.setLayoutParams(params); return view;
-    }
-    private TextView text(String value, float size) { TextView view = new TextView(this); view.setText(value); view.setTextSize(size); view.setTextColor(INK); return view; }
-    private Button button(String value, View.OnClickListener action) { Button view = new Button(this); view.setText(value); view.setTextColor(TEAL); view.setAllCaps(false); view.setMinWidth(0); view.setPadding(dp(12), 0, dp(12), 0); if (action != null) view.setOnClickListener(action); return view; }
+    private LinearLayout card() { return Ui.card(this, Color.WHITE); }
+    private TextView text(String value, float size) { return Ui.text(this, value, size, INK, false); }
+    private TextView muted(String value, float size) { return Ui.text(this, value, size, Ui.MUTED, false); }
+    private Button button(String value, View.OnClickListener action) { return Ui.button(this, value, false, action); }
     private Spinner spinner(String[] items) {
         Spinner view = new Spinner(this); ArrayAdapter<String> adapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, items);
-        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item); view.setAdapter(adapter); return view;
+        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item); view.setAdapter(adapter);view.setBackground(Ui.shape(this,Ui.BG,14,true));view.setPadding(dp(10),0,dp(10),0);return view;
     }
     private EditText field(LinearLayout form, String hint, String value, boolean secret) {
-        form.addView(text(hint, 13)); EditText edit = new EditText(this); edit.setText(value); edit.setSingleLine(true); edit.setTextSize(16);
-        edit.setInputType(secret ? InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD : InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
-        edit.setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS); form.addView(edit); return edit;
+        TextView label=Ui.text(this,hint,12,Ui.MUTED,true);label.setPadding(0,dp(10),0,dp(10));form.addView(label);
+        EditText edit=new EditText(this);edit.setText(value);edit.setSingleLine(true);edit.setTextSize(15);edit.setTextColor(Ui.INK);edit.setHintTextColor(Ui.MUTED);
+        edit.setPadding(dp(14),0,dp(14),0);edit.setBackground(Ui.shape(this,Ui.BG,14,true));
+        edit.setInputType(secret?InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_VARIATION_PASSWORD:InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_VARIATION_URI);
+        edit.setContentDescription(hint);
+        edit.setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS);form.addView(edit,new LinearLayout.LayoutParams(-1,dp(54)));return edit;
     }
-    private CheckBox check(LinearLayout form, String label, boolean checked) { CheckBox box = new CheckBox(this); box.setText(label); box.setChecked(checked); form.addView(box); return box; }
-    private GradientDrawable tinted(int color) { GradientDrawable drawable = new GradientDrawable(); drawable.setColor(color); drawable.setCornerRadius(dp(17)); return drawable; }
     private int dp(float value) { return Math.round(value * getResources().getDisplayMetrics().density); }
     private void copy(String value) { ((ClipboardManager) getSystemService(CLIPBOARD_SERVICE)).setPrimaryClip(ClipData.newPlainText("译文", value)); toast("已复制译文"); }
     private void toast(String value) { if (!isDestroyed()) Toast.makeText(this, value, Toast.LENGTH_LONG).show(); }

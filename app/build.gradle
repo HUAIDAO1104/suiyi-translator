@@ -11,9 +11,11 @@ android {
         applicationId 'app.suiyi.translate'
         minSdk 26
         targetSdk 35
+        testInstrumentationRunner 'app.suiyi.translate.UiSmokeTest'
         versionCode requestedVersionCode
         versionName requestedVersionName
         buildConfigField 'String', 'UPDATE_REPOSITORY', '"' + providers.gradleProperty('updateRepository').getOrElse('') + '"'
+        buildConfigField 'String', 'DEFAULT_API_BASE', groovy.json.JsonOutput.toJson(providers.gradleProperty('defaultApiBase').getOrElse(''))
     }
     buildFeatures { buildConfig true }
     compileOptions {
