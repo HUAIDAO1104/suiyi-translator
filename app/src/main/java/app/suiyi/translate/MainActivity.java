@@ -58,6 +58,7 @@ public final class MainActivity extends Activity {
     private Button translateButton, stopButton, favoriteButton, voiceMode, textMode;
     private LinearLayout voiceA, voiceB, voiceDock, resultActions, setupBanner;
     private LinearLayout screenRoot, languageBar;
+    private LinearLayout translatedPanel;
     private TextView voiceLabelA, voiceLabelB, languageA, languageB, originalLabel, sceneLabel, translatedHint, dockHint;
     private boolean typing;
     private SpeechRecognizer recognizer;
@@ -148,6 +149,7 @@ public final class MainActivity extends Activity {
         input.setContentDescription("翻译原文");
         originalCard.addView(input, new LinearLayout.LayoutParams(-1, -2)); body.addView(originalCard);
         LinearLayout translatedCard = Ui.card(this, Ui.SOFT); direction = Ui.text(this, "译文 · ไทย", 12, Ui.ACCENT, true); translatedCard.addView(direction);
+        translatedPanel=translatedCard;
         translation = Ui.text(this, "译文将出现在这里", 23, Color.rgb(155,149,183), false); translation.setTextIsSelectable(true); translation.setLineSpacing(dp(7), 1); translation.setPadding(0, dp(18), 0, dp(14)); translatedCard.addView(translation);
         translatedHint = muted("双方轮流点击下方按钮说话", 11); translatedCard.addView(translatedHint);
         resultActions = row(); Button read = Ui.action(this, "volume", "朗读", v -> { if (latest != null) speak(latest.translated, latest.target); });
@@ -197,11 +199,15 @@ public final class MainActivity extends Activity {
         if (busy) cancelOperation(); conversation.clear(); input.setText(""); latest = null; inputLanguage=source();refreshVoiceLabels();showResultState(); status.setText("已开启新对话"); if (tts != null) tts.stop();
     }
     private void showResultState() {
+        updateConfiguredState();
         resultActions.setVisibility(latest == null ? View.GONE : View.VISIBLE); translatedHint.setVisibility(latest == null ? View.VISIBLE : View.GONE);
         translation.setTextColor(latest == null ? Color.rgb(155,149,183) : Ui.INK);
         if (latest == null) {translation.setText("译文将出现在这里"); direction.setText("译文 · " + target().label); favoriteButton.setText("收藏");}
     }
-    private void updateConfiguredState() { setupBanner.setVisibility(settings.hasApiKey() ? View.GONE : View.VISIBLE); }
+    private void updateConfiguredState() {
+        boolean configured=settings.hasApiKey();setupBanner.setVisibility(configured ? View.GONE : View.VISIBLE);
+        translatedPanel.setVisibility(configured||latest!=null ? View.VISIBLE : View.GONE);
+    }
     private void applyInsets(View root, int horizontal) {
         root.setPadding(dp(horizontal), 0, dp(horizontal), dp(8));
         root.setOnApplyWindowInsetsListener((v, insets) -> {
