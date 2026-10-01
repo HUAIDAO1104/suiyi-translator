@@ -66,16 +66,18 @@ jobs:
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: suiyi
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          DEFAULT_API_BASE: ${{ secrets.DEFAULT_API_BASE }}
         run: >-
           ./gradlew --no-daemon assembleRelease
           -PappVersionCode="$APP_VERSION_CODE"
           -PappVersionName="$APP_VERSION_NAME"
           -PupdateRepository="$GITHUB_REPOSITORY"
+          -PdefaultApiBase="$DEFAULT_API_BASE"
       - name: Verify and package release
         env:
-          RELEASE_NOTES: ${{ inputs.notes || '中英泰双向翻译、手机听写、朗读、收藏及手机更新。' }}
+          RELEASE_NOTES: ${{ inputs.notes || '全新界面：双方语音按钮、语音和文字切换、清晰的原文译文、设置及记录页。接口地址和模型已预置，只需填写 API Key。' }}
         run: |
-          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose app/build/outputs/apk/release/app-release.apk
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --min-sdk-version 23 --verbose app/build/outputs/apk/release/app-release.apk
           python3 scripts/package_release.py "$RUNNER_TEMP/release"
       - name: Publish phone update
         env:
