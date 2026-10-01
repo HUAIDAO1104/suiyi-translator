@@ -219,6 +219,7 @@ public final class MainActivity extends Activity {
         if (busy) return;
         if (source == target) { toast("请选择两种不同的语言。"); return; }
         if (checkedConfig() == null) return;
+        from.setSelection(source.ordinal()); to.setSelection(target.ordinal()); refreshVoiceLabels();
         pendingSource = source; pendingTarget = target;
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, MICROPHONE); return;
@@ -302,7 +303,7 @@ public final class MainActivity extends Activity {
     }
     @Override public void onRequestPermissionsResult(int request, String[] permissions, int[] results) {
         super.onRequestPermissionsResult(request, permissions, results);
-        if (request == MICROPHONE && results.length > 0 && results[0] == PackageManager.PERMISSION_GRANTED) beginVoice(pendingSource, pendingTarget);
+        if (request == MICROPHONE && results.length > 0 && results[0] == PackageManager.PERMISSION_GRANTED) beginVoice(pendingSource == null ? source() : pendingSource, pendingTarget == null ? target() : pendingTarget);
         else if (request == MICROPHONE) toast("未授予麦克风权限，可以继续使用文字翻译。");
     }
     @Override protected void onActivityResult(int request, int result, Intent data) {
@@ -311,7 +312,7 @@ public final class MainActivity extends Activity {
             setBusy(false, "准备就绪");
             if (result == RESULT_OK && data != null) {
                 ArrayList<String> texts = data.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS);
-                if (texts != null && !texts.isEmpty()) { input.setText(texts.get(0)); translateText(texts.get(0), pendingSource, pendingTarget); }
+                if (texts != null && !texts.isEmpty()) { input.setText(texts.get(0)); translateText(texts.get(0), pendingSource == null ? source() : pendingSource, pendingTarget == null ? target() : pendingTarget); }
             }
         } else if (request == INSTALL_PERMISSION && getPackageManager().canRequestPackageInstalls()) installDownloaded();
     }
