@@ -1,0 +1,50 @@
+plugins { id 'com.android.application' }
+
+def requestedVersionCode = providers.gradleProperty('appVersionCode').getOrElse('1').toInteger()
+def requestedVersionName = providers.gradleProperty('appVersionName').getOrElse('0.1.0')
+def releaseKey = System.getenv('ANDROID_KEYSTORE_PATH')
+
+android {
+    namespace 'app.suiyi.translate'
+    compileSdk 35
+    defaultConfig {
+        applicationId 'app.suiyi.translate'
+        minSdk 26
+        targetSdk 35
+        versionCode requestedVersionCode
+        versionName requestedVersionName
+        buildConfigField 'String', 'UPDATE_REPOSITORY', '"' + providers.gradleProperty('updateRepository').getOrElse('') + '"'
+    }
+    buildFeatures { buildConfig true }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+    signingConfigs {
+        if (releaseKey) {
+            release {
+                storeFile file(releaseKey)
+                storePassword System.getenv('ANDROID_KEYSTORE_PASSWORD')
+                keyAlias System.getenv('ANDROID_KEY_ALIAS')
+                keyPassword System.getenv('ANDROID_KEY_PASSWORD')
+            }
+        }
+    }
+    buildTypes {
+        release {
+            if (releaseKey) signingConfig signingConfigs.release
+            minifyEnabled false
+        }
+    }
+    lint {
+        abortOnError true
+        disable 'HardcodedText', 'SetTextI18n', 'MissingTranslation', 'ObsoleteSdkInt'
+    }
+    testOptions { unitTests.returnDefaultValues = true }
+}
+
+dependencies {
+    implementation 'androidx.core:core:1.15.0'
+    testImplementation 'junit:junit:4.13.2'
+    testImplementation 'org.json:json:20240303'
+}
