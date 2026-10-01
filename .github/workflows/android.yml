@@ -1,0 +1,99 @@
+name: Android build and release
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['**.md']
+  workflow_dispatch:
+    inputs:
+      notes:
+        description: 本次更新说明
+        required: false
+        default: 修复与体验改进
+
+permissions:
+  contents: write
+
+concurrency:
+  group: android-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      APP_VERSION_CODE: ${{ github.run_number }}
+      APP_VERSION_NAME: 0.1.${{ github.run_number }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Expand initial browser upload
+        shell: bash
+        run: |
+          if [ -f bootstrap.zip ]; then
+            unzip -q -o bootstrap.zip
+            git rm bootstrap.zip
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git add app scripts gradle gradlew gradlew.bat build.gradle settings.gradle gradle.properties .gitignore README.md
+            git commit -m 'Expand Android project source'
+            git push origin HEAD:main
+          fi
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@0b6dd653ba04f4f93bf581ec31e66cbd7dcb644d # v4
+      - name: Check and test
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon testDebugUnitTest lintDebug
+      - name: Load persistent APK signing key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        shell: bash
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ] || [ -z "$KEYSTORE_PASSWORD" ]; then
+            echo 'Set ANDROID_KEYSTORE_BASE64 and ANDROID_KEYSTORE_PASSWORD in repository Actions secrets.' >&2
+            exit 1
+          fi
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/suiyi-release.p12"
+          chmod 600 "$RUNNER_TEMP/suiyi-release.p12"
+      - name: Build signed APK
+        env:
+          ANDROID_KEYSTORE_PATH: ${{ runner.temp }}/suiyi-release.p12
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: suiyi
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: >-
+          ./gradlew --no-daemon assembleRelease
+          -PappVersionCode="$APP_VERSION_CODE"
+          -PappVersionName="$APP_VERSION_NAME"
+          -PupdateRepository="$GITHUB_REPOSITORY"
+      - name: Verify and package release
+        env:
+          RELEASE_NOTES: ${{ inputs.notes || '中英泰双向翻译、手机听写、朗读、收藏及手机更新。' }}
+        run: |
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose app/build/outputs/apk/release/app-release.apk
+          python3 scripts/package_release.py "$RUNNER_TEMP/release"
+      - name: Publish phone update
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "v$APP_VERSION_NAME" \
+            "$RUNNER_TEMP/release/suiyi.apk" "$RUNNER_TEMP/release/update.json" \
+            --title "随译 $APP_VERSION_NAME" \
+            --notes-file "$RUNNER_TEMP/release/release-notes.txt" \
+            --target "$(git rev-parse HEAD)"
+      - name: Remove temporary signing key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/suiyi-release.p12"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: verification-reports
+          path: |
+            app/build/reports/tests/testDebugUnitTest
+            app/build/reports/lint-results-debug.html
+          retention-days: 3
